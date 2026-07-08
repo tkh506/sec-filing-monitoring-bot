@@ -16,16 +16,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 CLEAN_TEXT_MAX_CHARS = 15_000
 
 _SYSTEM_PROMPT = (
-    "You extract factual information from SEC filings for a retail investor. Report only what "
-    "the filing text itself states -- do not add your own analysis, opinions, predictions, or "
-    "investment implications, and do not speculate beyond the text.\n\n"
-    "If the filing explicitly discloses risks, uncertainties, or material impacts (e.g. in a "
-    "Risk Factors section or similar), report those as stated -- that's factual content from the "
-    "filing, not your opinion. But do not editorialize on how significant they are or what they "
-    "might mean for the stock.\n\n"
-    "Format as short factual bullet points: what happened, the key parties/numbers/dates involved, "
-    "and any risks or material impacts explicitly disclosed in the text. Skip boilerplate "
-    "legal/procedural language. Under 200 words."
+    "You are summarizing an SEC filing for a retail investor. Be concise (under "
+    "150 words), plain-English, and highlight anything financially or "
+    "operationally material. Do not restate boilerplate legal language."
 )
 
 

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+.pytest_cache/
+.idea/
+
+# Internal planning/context docs -- not meant for the public repo
+INTRODUCTION.md
+INSTRUCTION.md
+CLAUDE.md

@@ -32,13 +32,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Welcome to the SEC Filing Monitor bot. I'll alert you here when a ticker you "
         "watch files something new with the SEC.",
-        reply_markup=menu.main_menu(),
+        reply_markup=menu.main_menu(update.effective_user.id),
     )
 
 
 @track_user
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(menu.HELP_TEXT, reply_markup=menu.main_menu(), parse_mode="HTML")
+    await update.message.reply_text(
+        menu.HELP_TEXT, reply_markup=menu.main_menu(update.effective_user.id), parse_mode="HTML"
+    )
 
 
 @track_user
@@ -47,7 +49,7 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Usage: /watch TICKER")
         return
     reply, ticker = await actions.do_watch(update.effective_user.id, context.args[0], actions.get_edgar(context))
-    markup = menu.post_watch_menu(ticker) if ticker else menu.main_menu()
+    markup = menu.post_watch_menu(ticker) if ticker else menu.main_menu(update.effective_user.id)
     await update.message.reply_text(reply, reply_markup=markup)
 
 
@@ -57,7 +59,7 @@ async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Usage: /unwatch TICKER")
         return
     reply = await actions.do_unwatch(update.effective_user.id, context.args[0])
-    await update.message.reply_text(reply, reply_markup=menu.main_menu())
+    await update.message.reply_text(reply, reply_markup=menu.main_menu(update.effective_user.id))
 
 
 @track_user
@@ -77,7 +79,7 @@ async def frequency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Frequency must be one of: 1h, 2h, 3h, 6h, 12h, 24h")
         return
     reply = await actions.do_set_frequency(update.effective_user.id, ticker, int(freq_str))
-    await update.message.reply_text(reply, reply_markup=menu.main_menu())
+    await update.message.reply_text(reply, reply_markup=menu.main_menu(update.effective_user.id))
 
 
 @track_user
@@ -89,7 +91,20 @@ async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.bot, update.effective_user.id, context.args[0], actions.get_edgar(context)
     )
     if error:
-        await update.message.reply_text(error, reply_markup=menu.main_menu())
+        await update.message.reply_text(error, reply_markup=menu.main_menu(update.effective_user.id))
+
+
+@track_user
+async def robostrategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    enabled = not db.is_robostrategy_enabled(user_id)
+    db.set_robostrategy_enabled(user_id, enabled)
+    reply = (
+        "🔔 RoboStrategy portfolio alerts turned ON (checked every 3h)."
+        if enabled
+        else "📈 RoboStrategy portfolio alerts turned OFF."
+    )
+    await update.message.reply_text(reply, reply_markup=menu.main_menu(user_id))
 
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -103,9 +118,9 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if action == "watch":
         reply, ticker = await actions.do_watch(update.effective_user.id, update.message.text, edgar)
-        markup = menu.post_watch_menu(ticker) if ticker else menu.main_menu()
+        markup = menu.post_watch_menu(ticker) if ticker else menu.main_menu(update.effective_user.id)
         await update.message.reply_text(reply, reply_markup=markup)
     elif action == "recent":
         error = await actions.do_show_recent(context.bot, update.effective_user.id, update.message.text, edgar)
         if error:
-            await update.message.reply_text(error, reply_markup=menu.main_menu())
+            await update.message.reply_text(error, reply_markup=menu.main_menu(update.effective_user.id))

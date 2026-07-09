@@ -12,6 +12,8 @@ moment one is filed — no more refreshing EDGAR by hand.
   structured data, no token cost.
 - Everything else arrives with a one-tap "🤖 Summarize with AI" button (also available as an
   optional extra on the standardized alerts).
+- Bonus: optional alerts for changes to a public fund's portfolio page (holdings, valuations, NAV
+  per share) — toggle on/off with one button.
 - Open to anyone — no account or allowlist required, just start the bot on Telegram.
 
 ## Stack

@@ -40,6 +40,10 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text, reply_markup=markup)
     elif prefix == "summarize":
         await _handle_summarize(query, context, rest)
+    elif prefix == "robostrategy":
+        await _handle_robostrategy_toggle(query, context)
+    elif prefix == "rsai":
+        await _handle_robostrategy_ai_take(query, context, rest)
     else:
         logger.warning("Unknown callback_data prefix: %r", data)
 
@@ -48,7 +52,7 @@ async def _handle_menu(query, context: ContextTypes.DEFAULT_TYPE, action: str) -
     user_id = query.from_user.id
     if action == "main":
         context.user_data.pop(AWAITING_TICKER_KEY, None)
-        await query.edit_message_text("What would you like to do?", reply_markup=menu.main_menu())
+        await query.edit_message_text("What would you like to do?", reply_markup=menu.main_menu(user_id))
     elif action == "list":
         context.user_data.pop(AWAITING_TICKER_KEY, None)
         text, markup = menu.watchlist_menu(user_id)
@@ -61,7 +65,34 @@ async def _handle_menu(query, context: ContextTypes.DEFAULT_TYPE, action: str) -
         await query.edit_message_text("Send me the ticker to look up (e.g. NVDA) — I'll show its latest 5 filings.")
     elif action == "help":
         context.user_data.pop(AWAITING_TICKER_KEY, None)
-        await query.edit_message_text(menu.HELP_TEXT, reply_markup=menu.main_menu(), parse_mode="HTML")
+        await query.edit_message_text(menu.HELP_TEXT, reply_markup=menu.main_menu(user_id), parse_mode="HTML")
+
+
+async def _handle_robostrategy_toggle(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = query.from_user.id
+    enabled = not db.is_robostrategy_enabled(user_id)
+    db.set_robostrategy_enabled(user_id, enabled)
+    status = "ON (checked every 3h)" if enabled else "OFF"
+    await query.edit_message_text(
+        f"RoboStrategy portfolio alerts turned {status}.", reply_markup=menu.main_menu(user_id)
+    )
+
+
+async def _handle_robostrategy_ai_take(query, context: ContextTypes.DEFAULT_TYPE, summary_id: str) -> None:
+    pending = db.get_robostrategy_pending_ai(summary_id)
+    if pending is None:
+        await query.message.reply_text("This request expired.")
+        return
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("Writing an AI take…")
+
+    try:
+        narration = await openrouter_client.narrate_robostrategy_update(pending["diff_text"])
+        await query.message.reply_text(f"📝 AI Take\n\n{narration}")
+    except Exception:
+        logger.exception("RoboStrategy AI take failed for summary_id=%s", summary_id)
+        await query.message.reply_text("Sorry, the AI take failed. Try again later.")
 
 
 async def _handle_summarize(query, context: ContextTypes.DEFAULT_TYPE, summary_id: str) -> None:

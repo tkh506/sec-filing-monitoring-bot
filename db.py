@@ -76,9 +76,33 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             form_type    TEXT NOT NULL,
             created_at   TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS robostrategy_snapshot (
+            id              INTEGER PRIMARY KEY CHECK (id = 1),
+            as_of           TEXT,
+            nav_per_share   REAL,
+            holdings_json   TEXT NOT NULL,
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS robostrategy_pending_ai (
+            summary_id  TEXT PRIMARY KEY,
+            diff_text   TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
+    # ALTER TABLE ... ADD COLUMN doesn't have an IF NOT EXISTS form, and CREATE TABLE IF NOT
+    # EXISTS above is a no-op against an already-initialized users table (this bot is already
+    # running in production with a persistent data/bot.db) -- check first, add if missing.
+    _ensure_column(conn, "users", "robostrategy_enabled", "robostrategy_enabled INTEGER NOT NULL DEFAULT 0")
     conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, add_column_ddl: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {add_column_ddl}")
 
 
 # --- users ---------------------------------------------------------------
@@ -240,5 +264,77 @@ def prune_old_pending_summaries() -> None:
     conn = get_connection()
     conn.execute(
         f"DELETE FROM pending_summaries WHERE created_at < datetime('now', '-{PENDING_SUMMARY_TTL_DAYS} days')"
+    )
+    conn.commit()
+
+
+# --- RoboStrategy portfolio monitor ---------------------------------------
+
+def get_robostrategy_subscribers() -> list[int]:
+    conn = get_connection()
+    rows = conn.execute("SELECT user_id FROM users WHERE robostrategy_enabled = 1").fetchall()
+    return [row["user_id"] for row in rows]
+
+
+def is_robostrategy_enabled(user_id: int) -> bool:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT robostrategy_enabled FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    return bool(row["robostrategy_enabled"]) if row else False
+
+
+def set_robostrategy_enabled(user_id: int, enabled: bool) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET robostrategy_enabled = ? WHERE user_id = ?",
+        (1 if enabled else 0, user_id),
+    )
+    conn.commit()
+
+
+def get_robostrategy_snapshot() -> sqlite3.Row | None:
+    conn = get_connection()
+    return conn.execute("SELECT * FROM robostrategy_snapshot WHERE id = 1").fetchone()
+
+
+def save_robostrategy_snapshot(as_of: str | None, nav_per_share: float | None, holdings_json: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO robostrategy_snapshot (id, as_of, nav_per_share, holdings_json, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET as_of=excluded.as_of, nav_per_share=excluded.nav_per_share,
+            holdings_json=excluded.holdings_json, updated_at=excluded.updated_at
+        """,
+        (as_of, nav_per_share, holdings_json, _now_iso()),
+    )
+    conn.commit()
+
+
+# --- pending AI-narration requests (RoboStrategy diffs) --------------------
+
+def insert_robostrategy_pending_ai(diff_text: str) -> str:
+    summary_id = uuid.uuid4().hex[:12]
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO robostrategy_pending_ai (summary_id, diff_text) VALUES (?, ?)",
+        (summary_id, diff_text),
+    )
+    conn.commit()
+    return summary_id
+
+
+def get_robostrategy_pending_ai(summary_id: str) -> sqlite3.Row | None:
+    conn = get_connection()
+    return conn.execute(
+        "SELECT * FROM robostrategy_pending_ai WHERE summary_id = ?", (summary_id,)
+    ).fetchone()
+
+
+def prune_old_robostrategy_pending_ai() -> None:
+    conn = get_connection()
+    conn.execute(
+        f"DELETE FROM robostrategy_pending_ai WHERE created_at < datetime('now', '-{PENDING_SUMMARY_TTL_DAYS} days')"
     )
     conn.commit()

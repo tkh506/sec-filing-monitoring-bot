@@ -11,22 +11,27 @@ HELP_TEXT = (
     "• Set a check frequency per ticker: 1h, 2h, 3h, 6h, 12h, or 24h\n"
     "• Share-issuance filings get a pre-formatted summary automatically\n"
     "• Everything else comes with a 🤖 Summarize with AI button\n"
-    "• Look up any ticker's latest 5 filings on demand, any time\n\n"
+    "• Look up any ticker's latest 5 filings on demand, any time\n"
+    "• Optional: RoboStrategy portfolio alerts (fixed 3h check, toggle on/off)\n\n"
     "Use the buttons below, or type these commands:\n"
     "/watch TICKER — add a ticker\n"
     "/unwatch TICKER — remove a ticker\n"
     "/list — show your watchlist\n"
     "/frequency TICKER 6h — change check frequency\n"
-    "/recent TICKER — show the latest 5 filings right now"
+    "/recent TICKER — show the latest 5 filings right now\n"
+    "/robostrategy — toggle RoboStrategy portfolio alerts"
 )
 
 
-def main_menu() -> InlineKeyboardMarkup:
+def main_menu(user_id: int) -> InlineKeyboardMarkup:
+    robostrategy_on = db.is_robostrategy_enabled(user_id)
+    robostrategy_label = "🔔 RoboStrategy Alerts: ON" if robostrategy_on else "📈 RoboStrategy Alerts: OFF"
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📋 My Watchlist", callback_data="menu:list")],
             [InlineKeyboardButton("➕ Add Ticker", callback_data="menu:add")],
             [InlineKeyboardButton("🔎 Recent Filings", callback_data="menu:recent")],
+            [InlineKeyboardButton(robostrategy_label, callback_data="robostrategy:toggle")],
             [InlineKeyboardButton("❓ Help", callback_data="menu:help")],
         ]
     )

@@ -14,6 +14,7 @@ from handlers.commands import (
     list_watchlist,
     on_text_message,
     recent,
+    robostrategy,
     start,
     unwatch,
     watch,
@@ -32,15 +33,17 @@ BOT_COMMANDS = [
     BotCommand("list", "Show your watchlist"),
     BotCommand("frequency", "Set check frequency, e.g. /frequency NVDA 6h"),
     BotCommand("recent", "Show latest 5 filings for a ticker, e.g. /recent NVDA"),
+    BotCommand("robostrategy", "Toggle RoboStrategy portfolio alerts on/off"),
     BotCommand("help", "Show help"),
 ]
 
 
 async def _on_startup(application: Application) -> None:
     db.prune_old_pending_summaries()
+    db.prune_old_robostrategy_pending_ai()
     await application.bot.set_my_commands(BOT_COMMANDS)
     edgar = application.bot_data["edgar"]
-    scheduler = build_scheduler(edgar, application.bot)
+    scheduler = build_scheduler(edgar, application.bot, config.get_edgar_user_agent())
     scheduler.start()
     application.bot_data["scheduler"] = scheduler
     logger.info("Scheduler started.")
@@ -75,6 +78,7 @@ def main() -> None:
     application.add_handler(CommandHandler("list", list_watchlist))
     application.add_handler(CommandHandler("frequency", frequency))
     application.add_handler(CommandHandler("recent", recent))
+    application.add_handler(CommandHandler("robostrategy", robostrategy))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 

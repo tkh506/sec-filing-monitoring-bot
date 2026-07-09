@@ -125,5 +125,5 @@ async def do_show_recent(bot, user_id: int, ticker_raw: str, edgar) -> str | Non
     for filing in reversed(recent_filings):  # oldest-first, same convention as real alerts
         filing_for_user = dataclasses.replace(filing, ticker=ticker)
         await send_filing_alert(bot, user_id, filing_for_user, edgar)
-    await bot.send_message(chat_id=user_id, text="What next?", reply_markup=menu.main_menu())
+    await bot.send_message(chat_id=user_id, text="What next?", reply_markup=menu.main_menu(user_id))
     return None

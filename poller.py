@@ -69,7 +69,11 @@ async def send_filing_alert(bot, user_id: int, filing: Filing, edgar) -> None:
 
 
 async def _send_no_new_filings(bot, user_id: int, ticker: str) -> None:
-    text = f"✅ No new filings for {ticker} in the last 24h. Bot is running."
+    # Deliberately doesn't claim a specific lookback window (e.g. "in the last 24h") -- this
+    # only means "nothing new since the last check for this ticker," which varies by that
+    # ticker's frequency and says nothing about filings already reported earlier the same day
+    # via their own alert. A hardcoded "24h" claim would be factually wrong in that case.
+    text = f"✅ No new filings for {ticker} since the last check. Bot is running."
     await send_with_retry(bot, user_id, text)
 
 

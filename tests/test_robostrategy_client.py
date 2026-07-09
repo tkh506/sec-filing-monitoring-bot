@@ -54,6 +54,32 @@ def test_handles_row_without_footnote_markers():
     assert no_footnote.pct_nav == 1.0
 
 
+_DUPLICATE_NAME_ENTRIES = _entry(
+    "Apptronik, Inc.", "(a)(b)(c)(d)", "Humanoid Robotics", "$19,503,143", "7.8%"
+) + _entry("Apptronik, Inc.", "(a)(b)(c)", "Humanoid Robotics", "$17,746,859", "7.1%")
+
+DUPLICATE_NAME_FIXTURE_HTML = f"""
+<html><body>
+<p>As of June 30, 2026 monthly NAV&nbsp;</p>
+<div class="table">{_DUPLICATE_NAME_ENTRIES}</div>
+<p>NAV per share</p><div><p>$10.51</p></div>
+</body></html>
+"""
+
+
+def test_aggregates_multiple_holdings_of_the_same_company():
+    # The real page currently lists Apptronik and Dexmate as two separate funding-round rows
+    # each -- matching holdings by name alone (without aggregating first) is ambiguous and, as
+    # discovered via a live-pipeline test, silently produces spurious "changed" diffs even when
+    # nothing actually changed. Aggregating at parse time is the fix: one row per company.
+    snap = parse_portfolio(DUPLICATE_NAME_FIXTURE_HTML)
+    assert len(snap.holdings) == 1
+    apptronik = snap.holdings[0]
+    assert apptronik.name == "Apptronik, Inc."
+    assert apptronik.fair_value == 19_503_143 + 17_746_859
+    assert apptronik.pct_nav == pytest.approx(7.8 + 7.1)
+
+
 def test_raises_on_no_entries_found():
     with pytest.raises(RobostrategyParseError):
         parse_portfolio("<html><body>nothing here</body></html>")

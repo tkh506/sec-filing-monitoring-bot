@@ -134,8 +134,38 @@ def _parse_as_of_date(page_html: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _aggregate_by_company(holdings: list[Holding]) -> list[Holding]:
+    """Merge multiple line items for the same company (e.g. separate funding-round holdings --
+    the real page currently lists both Apptronik and Dexmate as two rows each) into one combined
+    row per company. This is the granularity the diff/alert logic operates on (each *company's*
+    fair value and % of NAV, per the user's framing), and it also sidesteps an entire class of
+    bug: matching holdings by name alone is ambiguous when a name isn't unique, so aggregating
+    upfront means every downstream consumer only ever sees one row per company."""
+    order: list[str] = []
+    business_by_name: dict[str, str] = {}
+    fair_value_by_name: dict[str, float] = {}
+    pct_by_name: dict[str, float] = {}
+    for h in holdings:
+        if h.name not in business_by_name:
+            order.append(h.name)
+            business_by_name[h.name] = h.business
+            fair_value_by_name[h.name] = 0.0
+            pct_by_name[h.name] = 0.0
+        fair_value_by_name[h.name] += h.fair_value
+        pct_by_name[h.name] += h.pct_nav
+    return [
+        Holding(
+            name=name,
+            business=business_by_name[name],
+            fair_value=fair_value_by_name[name],
+            pct_nav=pct_by_name[name],
+        )
+        for name in order
+    ]
+
+
 def parse_portfolio(page_html: str) -> RobostrategySnapshot:
-    holdings = _parse_holdings(page_html)
+    holdings = _aggregate_by_company(_parse_holdings(page_html))
     return RobostrategySnapshot(
         as_of=_parse_as_of_date(page_html),
         nav_per_share=_parse_nav_per_share(page_html),

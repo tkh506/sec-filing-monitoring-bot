@@ -1,9 +1,14 @@
 """Diffing + the scheduled check cycle for the RoboStrategy portfolio monitor.
 
-All three tracked changes (company added/removed, fair value/% of NAV change, NAV per share
-change) are deterministic diffs -- no AI involved here by design (see INTRODUCTION.md). The
-optional "AI Take" button (wired in handlers/callbacks.py) only turns an already-computed factual
-diff into readable prose on tap; it never decides what counts as a change.
+All tracked changes (company added/removed, fair value/% of NAV change, NAV per share change) are
+deterministic diffs -- no AI involved here by design (see INTRODUCTION.md). The optional "AI Take"
+button (wired in handlers/callbacks.py) only turns an already-computed factual diff into readable
+prose on tap; it never decides what counts as a change.
+
+Fair value and NAV-per-share are `float | None` throughout: RoboStrategy removed both from the
+public page in a 2026-07 redesign (see robostrategy_client.py's module docstring), so in practice
+they're always None now and every line below degrades to reporting only % of NAV. Kept optional
+rather than dropped outright in case a future redesign brings the dollar figures back.
 """
 import json
 import logging
@@ -31,8 +36,8 @@ _PCT_EPSILON = 0.05
 _NAV_EPSILON = 0.001
 
 _NOTE_TEXT = (
-    "(% of NAV is share-of-total — one holding's fair-value move shifts every holding's %, "
-    "even ones whose own fair value didn't change.)"
+    "(% of NAV is share-of-total — a change in one holding's value shifts every holding's %, "
+    "even ones whose own value didn't change.)"
 )
 
 
@@ -71,10 +76,13 @@ def _changed_holdings(
         prev_h = prev_by_name.get(curr_h.name)
         if prev_h is None:
             continue
-        if (
-            abs(curr_h.fair_value - prev_h.fair_value) > _FAIR_VALUE_EPSILON
-            or abs(curr_h.pct_nav - prev_h.pct_nav) > _PCT_EPSILON
-        ):
+        pct_changed = abs(curr_h.pct_nav - prev_h.pct_nav) > _PCT_EPSILON
+        fair_value_changed = (
+            prev_h.fair_value is not None
+            and curr_h.fair_value is not None
+            and abs(curr_h.fair_value - prev_h.fair_value) > _FAIR_VALUE_EPSILON
+        )
+        if pct_changed or fair_value_changed:
             changed.append((curr_h.name, prev_h, curr_h))
     return changed
 
@@ -89,17 +97,23 @@ def diff_snapshots(previous: RobostrategySnapshot, current: RobostrategySnapshot
 
     for name, h in curr_by_name.items():
         if name not in prev_names:
-            lines.append(f"➕ Added: {name} ({h.business}) — ${h.fair_value:,.0f} ({h.pct_nav:.1f}% of NAV)")
+            if h.fair_value is not None:
+                lines.append(f"➕ Added: {name} ({h.business}) — ${h.fair_value:,.0f} ({h.pct_nav:.1f}% of NAV)")
+            else:
+                lines.append(f"➕ Added: {name} ({h.business}) — {h.pct_nav:.1f}% of NAV")
 
     curr_names = set(curr_by_name)
     for name in prev_names - curr_names:
         lines.append(f"➖ Removed: {name}")
 
     for name, prev_h, curr_h in _changed_holdings(previous, current):
-        lines.append(
-            f"{name}: ${prev_h.fair_value:,.0f} → ${curr_h.fair_value:,.0f}  "
-            f"({prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV)"
-        )
+        if prev_h.fair_value is not None and curr_h.fair_value is not None:
+            lines.append(
+                f"{name}: ${prev_h.fair_value:,.0f} → ${curr_h.fair_value:,.0f}  "
+                f"({prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV)"
+            )
+        else:
+            lines.append(f"{name}: {prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV")
 
     if (
         previous.nav_per_share is not None
@@ -128,11 +142,12 @@ def _format_message(current: RobostrategySnapshot, change_lines: list[str], incl
 
 
 def _format_heartbeat(current: RobostrategySnapshot) -> str:
-    nav_text = f"${current.nav_per_share:.2f}" if current.nav_per_share is not None else "unknown"
-    return (
-        f"✅ No changes to the RoboStrategy portfolio today. "
-        f"NAV per share: {nav_text} across {len(current.holdings)} holdings."
-    )
+    if current.nav_per_share is not None:
+        return (
+            f"✅ No changes to the RoboStrategy portfolio today. "
+            f"NAV per share: ${current.nav_per_share:.2f} across {len(current.holdings)} holdings."
+        )
+    return f"✅ No changes to the RoboStrategy portfolio today. {len(current.holdings)} holdings tracked."
 
 
 async def run_robostrategy_check(bot, user_agent: str) -> None:

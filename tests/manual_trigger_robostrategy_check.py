@@ -7,10 +7,10 @@ real subscribers and writes to the same data/bot.db the running service uses):
                                                                               # no fabrication
 
 Default mode fetches the real current portfolio page, fabricates a slightly different "previous"
-snapshot (tweaks the first holding's fair value/%, drops the last holding, nudges NAV per share --
-so added/removed/changed logic all get exercised in one pass), saves that as the last-seen state,
-then immediately runs the real check cycle via a real telegram.Bot. This WILL send real Telegram
-messages to every subscriber who has RoboStrategy alerts turned on.
+snapshot (tweaks the first holding's %, drops the last holding, nudges NAV per share/fair value if
+those happen to be present -- so added/removed/changed logic all get exercised in one pass), saves
+that as the last-seen state, then immediately runs the real check cycle via a real telegram.Bot.
+This WILL send real Telegram messages to every subscriber who has RoboStrategy alerts turned on.
 
 IMPORTANT: default mode fabricates a FRESH fake diff every time it runs, so running it twice in a
 row sends the SAME alert twice -- it does not "settle" to silence on a second run, because each
@@ -56,14 +56,16 @@ async def main() -> None:
             print("Not enough holdings on the live page to fabricate a realistic test diff.")
             return
 
-        # Fabricate a "previous" snapshot that differs from the real current one in all three
-        # ways the feature tracks: a fair-value/% change (first holding), a removed holding
-        # (drop the last one -- it'll show up as "added" when we diff against real current
-        # data), and a NAV-per-share change.
+        # Fabricate a "previous" snapshot that differs from the real current one in every way
+        # the feature can currently track: a % of NAV change (first holding; fair value too, if
+        # the page ever publishes it again), a removed holding (drop the last one -- it'll show
+        # up as "added" when we diff against real current data), and a NAV-per-share change (if
+        # available).
+        first = current.holdings[0]
         tweaked_first = replace(
-            current.holdings[0],
-            fair_value=round(current.holdings[0].fair_value * 0.9),
-            pct_nav=round(current.holdings[0].pct_nav * 0.9, 1),
+            first,
+            fair_value=round(first.fair_value * 0.9) if first.fair_value is not None else None,
+            pct_nav=round(first.pct_nav * 0.9, 1),
         )
         fake_previous_holdings = (tweaked_first,) + current.holdings[1:-1]
         fake_previous_nav = round(current.nav_per_share * 0.95, 2) if current.nav_per_share else None

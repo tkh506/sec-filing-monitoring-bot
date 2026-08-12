@@ -6,12 +6,20 @@ emit today. Parsing is deliberately defensive: any structural surprise raises
 RobostrategyParseError rather than silently returning wrong or partial data, so the caller can
 alert "couldn't parse, check manually" instead of going quiet.
 
-Validated live against the real page before this was written: the table is a sequence of
-`data-framer-name="Portfolio Entry"` blocks, each with exactly 5 `<p>` cells in order --
-Company Name, footnote markers (e.g. "(a)(b)(c)"), Nature of Business, Fair Value ($), % of Net
-Assets. Framer duplicates the *entire* table in the HTML for a responsive-breakpoint variant (the
-real page currently repeats it 4x) -- rather than hardcode a duplication factor, `_minimal_period`
-detects the shortest repeating run of rows and keeps just one copy.
+NOTE (observed 2026-07): RoboStrategy redesigned this page and removed two data points it used to
+publish here -- each holding's dollar Fair Value, and the fund's NAV per share. Only company
+name/business/% of Net Assets remain. `Holding.fair_value` and `RobostrategySnapshot.nav_per_share`
+are therefore always None now -- that's not a parse failure, the site simply stopped publishing
+that data. robostrategy_monitor.py's diff/alert logic degrades gracefully around this (reports
+only what's actually available); this client still accepts a fair_value if a future redesign
+brings it back; nothing downstream assumes it's always None.
+
+Row anchor: each holding's name cell is `data-framer-name="Name / Link"` (companies with their own
+portfolio sub-page, name wrapped in an <a>) or plain `data-framer-name="Name"` (companies without
+one, name in a plain <p>) -- both forms coexist on the real page. Framer duplicates the whole table
+for a responsive-breakpoint variant (see _minimal_period). Summary/total rows sharing this same row
+markup (e.g. "Total Investments", "Cash & cash equivalents", "Total Net Assets (NAV)") are filtered
+out because they have an empty Nature-of-Business field, unlike real holdings.
 """
 import html
 import re
@@ -21,13 +29,13 @@ import httpx
 
 PORTFOLIO_URL = "https://robostrategy.co/portfolio"
 
-_ENTRY_MARKER_RE = re.compile(r'data-framer-name="Portfolio Entry"')
+_NAME_MARKER_RE = re.compile(r'<div[^>]*data-framer-name="Name(?: / Link)?"[^>]*>(.*?)</div>', re.DOTALL)
+_TEXT_IN_TAG_RE = re.compile(r"<(?:a|p)[^>]*>([^<]*)</(?:a|p)>")
 _PARAGRAPH_RE = re.compile(r"<p[^>]*>([^<]*)</p>")
 _FOOTNOTE_RE = re.compile(r"^(\([a-z0-9]+\))+$", re.IGNORECASE)
-_FAIR_VALUE_RE = re.compile(r"\$?([\d,]+(?:\.\d+)?)")
 _PCT_RE = re.compile(r"(-?[\d.]+)%")
 _AS_OF_RE = re.compile(r"As of ([A-Za-z]+ \d{1,2}, \d{4}) monthly NAV")
-_ENTRY_WINDOW_CHARS = 3000
+_ROW_WINDOW_CHARS = 2000
 _NAV_PER_SHARE_WINDOW_CHARS = 1500
 
 
@@ -39,7 +47,7 @@ class RobostrategyParseError(Exception):
 class Holding:
     name: str
     business: str
-    fair_value: float
+    fair_value: float | None
     pct_nav: float
 
 
@@ -69,47 +77,54 @@ def _minimal_period(rows: list[tuple]) -> int:
 
 
 def _parse_holdings(page_html: str) -> list[Holding]:
-    positions = [m.start() for m in _ENTRY_MARKER_RE.finditer(page_html)]
-    if not positions:
+    name_matches = list(_NAME_MARKER_RE.finditer(page_html))
+    if not name_matches:
         raise RobostrategyParseError("No portfolio entries found -- page structure may have changed.")
 
     raw_rows = []
-    for i, pos in enumerate(positions):
-        end = positions[i + 1] if i + 1 < len(positions) else pos + _ENTRY_WINDOW_CHARS
-        chunk = page_html[pos : min(end, pos + _ENTRY_WINDOW_CHARS)]
-        cells_seen = _PARAGRAPH_RE.findall(chunk)
-        # A row is [name, footnote?, business, fair_value, pct] -- footnote is optional, so the
-        # real row length depends on content (does cells_seen[1] look like a footnote marker?).
-        # Deciding this BEFORE truncating matters: a fixed-size slice can pull in bleed from
-        # trailing page content (e.g. the "Total Investments" summary row) whenever a
-        # footnote-less row happens to be the last entry on the page.
-        row_len = 5 if len(cells_seen) > 1 and _FOOTNOTE_RE.match(cells_seen[1]) else 4
-        raw_rows.append(tuple(cells_seen[:row_len]))
+    for i, m in enumerate(name_matches):
+        name_text_match = _TEXT_IN_TAG_RE.search(m.group(1))
+        if name_text_match is None:
+            raise RobostrategyParseError(f"Could not extract a name from row markup: {m.group(1)!r}")
+        name = name_text_match.group(1)
+
+        row_end = name_matches[i + 1].start() if i + 1 < len(name_matches) else m.end() + _ROW_WINDOW_CHARS
+        rest_chunk = page_html[m.end() : min(row_end, m.end() + _ROW_WINDOW_CHARS)]
+        rest_cells = _PARAGRAPH_RE.findall(rest_chunk)
+
+        # rest_cells is [footnote?, business, pct, ...possible trailing bleed]. Footnote optional.
+        if rest_cells and _FOOTNOTE_RE.match(rest_cells[0]):
+            business = rest_cells[1] if len(rest_cells) > 1 else ""
+            pct_raw = rest_cells[2] if len(rest_cells) > 2 else ""
+        else:
+            business = rest_cells[0] if len(rest_cells) > 0 else ""
+            pct_raw = rest_cells[1] if len(rest_cells) > 1 else ""
+
+        raw_rows.append((name, business, pct_raw))
 
     period = _minimal_period(raw_rows)
     unique_rows = raw_rows[:period]
 
     holdings = []
-    for cells in unique_rows:
-        if len(cells) == 5:
-            name, business, fair_value_raw, pct_raw = cells[0], cells[2], cells[3], cells[4]
-        elif len(cells) == 4:
-            name, business, fair_value_raw, pct_raw = cells[0], cells[1], cells[2], cells[3]
-        else:
-            raise RobostrategyParseError(f"Unexpected portfolio row shape: {cells!r}")
-
-        fv_match = _FAIR_VALUE_RE.search(fair_value_raw)
+    for name, business, pct_raw in unique_rows:
+        business = business.strip()
+        if not business:
+            continue  # summary/total row (e.g. "Total Investments"), not a real holding
         pct_match = _PCT_RE.search(pct_raw)
-        if not fv_match or not pct_match:
-            raise RobostrategyParseError(f"Could not parse fair value/pct from row: {cells!r}")
-
+        if not pct_match:
+            continue  # e.g. the header row ("Nature of Business" / "% of Net Assets" as literal text)
         holdings.append(
             Holding(
                 name=html.unescape(name.strip()),
-                business=html.unescape(business.strip()),
-                fair_value=float(fv_match.group(1).replace(",", "")),
+                business=html.unescape(business),
+                fair_value=None,  # no longer published on the page -- see module docstring
                 pct_nav=float(pct_match.group(1)),
             )
+        )
+
+    if not holdings:
+        raise RobostrategyParseError(
+            "Found row markers but no valid holdings after filtering -- page structure may have changed."
         )
     return holdings
 
@@ -143,7 +158,7 @@ def _aggregate_by_company(holdings: list[Holding]) -> list[Holding]:
     upfront means every downstream consumer only ever sees one row per company."""
     order: list[str] = []
     business_by_name: dict[str, str] = {}
-    fair_value_by_name: dict[str, float] = {}
+    fair_value_by_name: dict[str, float | None] = {}
     pct_by_name: dict[str, float] = {}
     for h in holdings:
         if h.name not in business_by_name:
@@ -151,7 +166,10 @@ def _aggregate_by_company(holdings: list[Holding]) -> list[Holding]:
             business_by_name[h.name] = h.business
             fair_value_by_name[h.name] = 0.0
             pct_by_name[h.name] = 0.0
-        fair_value_by_name[h.name] += h.fair_value
+        if h.fair_value is None or fair_value_by_name[h.name] is None:
+            fair_value_by_name[h.name] = None
+        else:
+            fair_value_by_name[h.name] += h.fair_value
         pct_by_name[h.name] += h.pct_nav
     return [
         Holding(

@@ -25,7 +25,8 @@ async def main() -> None:
     print(f"{len(snapshot.holdings)} holdings:")
     total_pct = 0.0
     for h in snapshot.holdings:
-        print(f"  {h.name:30s} {h.business:28s} ${h.fair_value:>14,.0f}  {h.pct_nav:>5.1f}%")
+        fv_text = f"${h.fair_value:>14,.0f}" if h.fair_value is not None else " " * 15
+        print(f"  {h.name:30s} {h.business:28s} {fv_text}  {h.pct_nav:>5.1f}%")
         total_pct += h.pct_nav
     print(f"Total % of NAV across holdings: {total_pct:.1f}%")
 

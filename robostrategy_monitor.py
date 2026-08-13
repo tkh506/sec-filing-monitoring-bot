@@ -1,14 +1,15 @@
 """Diffing + the scheduled check cycle for the RoboStrategy portfolio monitor.
 
-All tracked changes (company added/removed, fair value/% of NAV change, NAV per share change) are
-deterministic diffs -- no AI involved here by design (see INTRODUCTION.md). The optional "AI Take"
-button (wired in handlers/callbacks.py) only turns an already-computed factual diff into readable
-prose on tap; it never decides what counts as a change.
+All tracked changes (company added/removed, % of NAV change, total NAV change, NAV per share
+change) are deterministic diffs -- no AI involved here by design (see INTRODUCTION.md). The
+optional "AI Take" button (wired in handlers/callbacks.py) only turns an already-computed factual
+diff into readable prose on tap; it never decides what counts as a change.
 
-Fair value and NAV-per-share are `float | None` throughout: RoboStrategy removed both from the
-public page in a 2026-07 redesign (see robostrategy_client.py's module docstring), so in practice
-they're always None now and every line below degrades to reporting only % of NAV. Kept optional
-rather than dropped outright in case a future redesign brings the dollar figures back.
+`Holding.fair_value` is `float | None` and, in practice, always None: RoboStrategy removed the
+per-holding dollar Fair Value column in a 2026-07 redesign (see robostrategy_client.py's module
+docstring) and there's no reliable substitute source for it. Kept optional rather than dropped in
+case a future redesign brings it back. `total_nav`/`nav_per_share` are also `float | None` but
+*are* populated today -- they moved to a prose footnote sentence rather than disappearing.
 """
 import json
 import logging
@@ -34,6 +35,7 @@ PORTFOLIO_URL = "https://robostrategy.co/portfolio"
 _FAIR_VALUE_EPSILON = 0.005
 _PCT_EPSILON = 0.05
 _NAV_EPSILON = 0.001
+_TOTAL_NAV_EPSILON = 0.5
 
 _NOTE_TEXT = (
     "(% of NAV is share-of-total — a change in one holding's value shifts every holding's %, "
@@ -57,12 +59,22 @@ def _load_previous_snapshot() -> RobostrategySnapshot | None:
     if row is None:
         return None
     holdings = tuple(Holding(**h) for h in json.loads(row["holdings_json"]))
-    return RobostrategySnapshot(as_of=row["as_of"], nav_per_share=row["nav_per_share"], holdings=holdings)
+    return RobostrategySnapshot(
+        as_of=row["as_of"],
+        nav_per_share=row["nav_per_share"],
+        holdings=holdings,
+        total_nav=row["total_nav"],
+        nav_as_of=row["nav_as_of"],
+    )
 
 
 def _save_snapshot(snapshot: RobostrategySnapshot) -> None:
     db.save_robostrategy_snapshot(
-        snapshot.as_of, snapshot.nav_per_share, json.dumps(_holdings_to_dicts(snapshot.holdings))
+        snapshot.as_of,
+        snapshot.nav_per_share,
+        json.dumps(_holdings_to_dicts(snapshot.holdings)),
+        snapshot.total_nav,
+        snapshot.nav_as_of,
     )
 
 
@@ -116,6 +128,19 @@ def diff_snapshots(previous: RobostrategySnapshot, current: RobostrategySnapshot
             lines.append(f"{name}: {prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV")
 
     if (
+        previous.total_nav is not None
+        and current.total_nav is not None
+        and abs(current.total_nav - previous.total_nav) > _TOTAL_NAV_EPSILON
+    ):
+        pct_change = (
+            (current.total_nav - previous.total_nav) / previous.total_nav * 100 if previous.total_nav else 0.0
+        )
+        sign = "+" if pct_change >= 0 else ""
+        lines.append(
+            f"Total NAV: ${previous.total_nav:,.0f} → ${current.total_nav:,.0f} ({sign}{pct_change:.1f}%)"
+        )
+
+    if (
         previous.nav_per_share is not None
         and current.nav_per_share is not None
         and abs(current.nav_per_share - previous.nav_per_share) > _NAV_EPSILON
@@ -142,12 +167,12 @@ def _format_message(current: RobostrategySnapshot, change_lines: list[str], incl
 
 
 def _format_heartbeat(current: RobostrategySnapshot) -> str:
+    parts = [f"✅ No changes to the RoboStrategy portfolio today. {len(current.holdings)} holdings tracked."]
     if current.nav_per_share is not None:
-        return (
-            f"✅ No changes to the RoboStrategy portfolio today. "
-            f"NAV per share: ${current.nav_per_share:.2f} across {len(current.holdings)} holdings."
-        )
-    return f"✅ No changes to the RoboStrategy portfolio today. {len(current.holdings)} holdings tracked."
+        parts.append(f"NAV per share: ${current.nav_per_share:.2f}.")
+    if current.total_nav is not None:
+        parts.append(f"Total NAV: ${current.total_nav:,.0f}.")
+    return " ".join(parts)
 
 
 async def run_robostrategy_check(bot, user_agent: str) -> None:

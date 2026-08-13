@@ -59,8 +59,8 @@ async def main() -> None:
         # Fabricate a "previous" snapshot that differs from the real current one in every way
         # the feature can currently track: a % of NAV change (first holding; fair value too, if
         # the page ever publishes it again), a removed holding (drop the last one -- it'll show
-        # up as "added" when we diff against real current data), and a NAV-per-share change (if
-        # available).
+        # up as "added" when we diff against real current data), a NAV-per-share change, and a
+        # total-NAV change (both if available).
         first = current.holdings[0]
         tweaked_first = replace(
             first,
@@ -68,10 +68,15 @@ async def main() -> None:
             pct_nav=round(first.pct_nav * 0.9, 1),
         )
         fake_previous_holdings = (tweaked_first,) + current.holdings[1:-1]
-        fake_previous_nav = round(current.nav_per_share * 0.95, 2) if current.nav_per_share else None
+        fake_previous_nav_per_share = round(current.nav_per_share * 0.95, 2) if current.nav_per_share else None
+        fake_previous_total_nav = round(current.total_nav * 0.95, 2) if current.total_nav else None
 
         db.save_robostrategy_snapshot(
-            current.as_of, fake_previous_nav, json.dumps(_holdings_to_dicts(fake_previous_holdings))
+            current.as_of,
+            fake_previous_nav_per_share,
+            json.dumps(_holdings_to_dicts(fake_previous_holdings)),
+            fake_previous_total_nav,
+            current.nav_as_of,
         )
         print("Fabricated a fake 'previous' snapshot and saved it as the last-seen state.")
         print(f"  (dropped holding, so it'll show as newly added: {current.holdings[-1].name!r})")

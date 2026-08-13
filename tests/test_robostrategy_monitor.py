@@ -2,8 +2,15 @@ from robostrategy_client import Holding, RobostrategySnapshot
 from robostrategy_monitor import diff_snapshots
 
 
-def _snapshot(holdings: list[Holding], nav_per_share: float | None = 10.00, as_of: str = "June 30, 2026"):
-    return RobostrategySnapshot(as_of=as_of, nav_per_share=nav_per_share, holdings=tuple(holdings))
+def _snapshot(
+    holdings: list[Holding],
+    nav_per_share: float | None = 10.00,
+    as_of: str = "June 30, 2026",
+    total_nav: float | None = None,
+):
+    return RobostrategySnapshot(
+        as_of=as_of, nav_per_share=nav_per_share, holdings=tuple(holdings), total_nav=total_nav
+    )
 
 
 def test_no_change_produces_empty_diff():
@@ -64,10 +71,28 @@ def test_tiny_float_noise_is_not_reported_as_a_change():
     assert diff_snapshots(previous, current) == []
 
 
-# RoboStrategy's page no longer publishes fair value or NAV per share (2026-07 redesign) -- these
-# cover the resulting fair_value=None / nav_per_share=None reality, which is what the parser
-# actually produces today. The tests above (with real numbers) cover the same logic paths in case
-# the site ever brings those figures back -- both must keep working.
+def test_total_nav_change():
+    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], total_nav=270_000_000)
+    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], total_nav=274_578_031)
+    lines = diff_snapshots(previous, current)
+    assert len(lines) == 1
+    assert "Total NAV: $270,000,000 → $274,578,031" in lines[0]
+    assert "+1.7%" in lines[0]
+
+
+def test_no_total_nav_line_when_both_sides_are_none():
+    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)])
+    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 36.0)])
+    lines = diff_snapshots(previous, current)
+    assert not any("Total NAV" in line for line in lines)
+
+
+# RoboStrategy's page no longer publishes per-holding fair value (2026-07 redesign) -- these cover
+# the resulting fair_value=None reality, which is what the parser actually produces today for
+# every holding. The tests above (with real fair_value numbers) cover the same logic paths in
+# case the site ever brings that figure back -- both must keep working. Total NAV and NAV per
+# share, unlike fair value, ARE still published (moved to a prose footnote) -- see
+# robostrategy_client.py's module docstring.
 
 def test_added_company_without_fair_value_omits_dollar_amount():
     previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], nav_per_share=None)

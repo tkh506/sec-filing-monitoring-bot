@@ -6,13 +6,19 @@ emit today. Parsing is deliberately defensive: any structural surprise raises
 RobostrategyParseError rather than silently returning wrong or partial data, so the caller can
 alert "couldn't parse, check manually" instead of going quiet.
 
-NOTE (observed 2026-07): RoboStrategy redesigned this page and removed two data points it used to
-publish here -- each holding's dollar Fair Value, and the fund's NAV per share. Only company
-name/business/% of Net Assets remain. `Holding.fair_value` and `RobostrategySnapshot.nav_per_share`
-are therefore always None now -- that's not a parse failure, the site simply stopped publishing
-that data. robostrategy_monitor.py's diff/alert logic degrades gracefully around this (reports
-only what's actually available); this client still accepts a fair_value if a future redesign
-brings it back; nothing downstream assumes it's always None.
+NOTE (observed 2026-07): RoboStrategy redesigned this page and removed the per-holding dollar Fair
+Value column from the table -- `Holding.fair_value` is therefore always None now (kept as an
+optional field, not dropped, in case a future redesign brings it back). Total NAV and NAV per
+share are NOT gone, though -- they moved out of the old dedicated stat widget into a plain prose
+footnote sentence elsewhere on the page ("...Net Assets Applicable to Common Shares of $X as of
+[date]... net asset value as of [date], is $Y per share..."), which is what
+`_parse_total_nav`/`_parse_nav_per_share` now extract. Note this prose sentence can carry a more
+recent "as of" date (`RobostrategySnapshot.nav_as_of`) than the holdings table's own `as_of` date
+-- the fund's overall NAV appears to update on a different cadence than the detailed holdings
+breakdown. There's also a large embedded JSON blob further down the page with per-holding dollar
+figures, structured as Framer's internal CMS export (obfuscated field-ID hashes, no stable schema,
+and it appears to mix multiple report years per company) -- deliberately NOT parsed, too fragile
+and ambiguous to trust; per-company Fair Value stays unavailable.
 
 Row anchor: each holding's name cell is `data-framer-name="Name / Link"` (companies with their own
 portfolio sub-page, name wrapped in an <a>) or plain `data-framer-name="Name"` (companies without
@@ -35,8 +41,29 @@ _PARAGRAPH_RE = re.compile(r"<p[^>]*>([^<]*)</p>")
 _FOOTNOTE_RE = re.compile(r"^(\([a-z0-9]+\))+$", re.IGNORECASE)
 _PCT_RE = re.compile(r"(-?[\d.]+)%")
 _AS_OF_RE = re.compile(r"As of ([A-Za-z]+ \d{1,2}, \d{4}) monthly NAV")
+_TOTAL_NAV_RE = re.compile(
+    r"Net Assets Applicable to Common Shares of \$([\d,]+(?:\.\d+)?)\s+as of\s+([A-Za-z]+\s+\d{1,2},\s*\d{4})"
+)
+_NAV_PER_SHARE_RE = re.compile(
+    r"net asset value as of\s+([A-Za-z]+\s+\d{1,2},\s*\d{4}),\s*is\s*\$([\d,]+(?:\.\d+)?)\s*per share",
+    re.IGNORECASE,
+)
 _ROW_WINDOW_CHARS = 2000
-_NAV_PER_SHARE_WINDOW_CHARS = 1500
+
+# Summary/total rows share the same row markup as real holdings. An empty Nature-of-Business
+# field used to be enough to tell them apart, but RoboStrategy has since started filling in a
+# dollar figure on the "Total Net Assets (NAV)" row's business-position cell, which slipped that
+# row past the empty-business check and got it miscounted as a 100%-of-NAV holding. Belt and
+# braces: exclude by known label too, not just the (no longer reliable on its own) empty-field
+# heuristic, which stays as a fallback for any similarly-shaped row not in this list yet.
+_NON_HOLDING_ROW_NAMES = {
+    "Portfolio Company",  # header row
+    "Total Investments",
+    "Cash & cash equivalents",
+    "Investments Paid in Advance",
+    "Other assets, less liabilities",
+    "Total Net Assets (NAV)",
+}
 
 
 class RobostrategyParseError(Exception):
@@ -56,6 +83,8 @@ class RobostrategySnapshot:
     as_of: str | None
     nav_per_share: float | None
     holdings: tuple[Holding, ...]
+    total_nav: float | None = None
+    nav_as_of: str | None = None  # can differ from `as_of` -- see module docstring
 
 
 async def fetch_portfolio_html(user_agent: str) -> str:
@@ -107,15 +136,18 @@ def _parse_holdings(page_html: str) -> list[Holding]:
 
     holdings = []
     for name, business, pct_raw in unique_rows:
+        clean_name = html.unescape(name.strip())
+        if clean_name in _NON_HOLDING_ROW_NAMES:
+            continue
         business = business.strip()
         if not business:
-            continue  # summary/total row (e.g. "Total Investments"), not a real holding
+            continue  # summary/total row not in the denylist yet, but still not a real holding
         pct_match = _PCT_RE.search(pct_raw)
         if not pct_match:
             continue  # e.g. the header row ("Nature of Business" / "% of Net Assets" as literal text)
         holdings.append(
             Holding(
-                name=html.unescape(name.strip()),
+                name=clean_name,
                 business=html.unescape(business),
                 fair_value=None,  # no longer published on the page -- see module docstring
                 pct_nav=float(pct_match.group(1)),
@@ -129,19 +161,29 @@ def _parse_holdings(page_html: str) -> list[Holding]:
     return holdings
 
 
-def _parse_nav_per_share(page_html: str) -> float | None:
-    idx = page_html.find("NAV per share")
-    if idx == -1:
-        return None
-    window = page_html[idx : idx + _NAV_PER_SHARE_WINDOW_CHARS]
-    for cell in _PARAGRAPH_RE.findall(window):
-        m = re.search(r"\$([\d,]+\.?\d*)", cell)
-        if m:
-            try:
-                return float(m.group(1).replace(",", ""))
-            except ValueError:
-                continue
-    return None
+def _parse_total_nav(page_html: str) -> tuple[float | None, str | None]:
+    """Returns (total_nav, as_of_date) from the "...Net Assets Applicable to Common Shares of $X
+    as of [date]..." footnote sentence -- the old dedicated stat widget for this is gone, but the
+    figure itself is still published here."""
+    m = _TOTAL_NAV_RE.search(page_html)
+    if not m:
+        return None, None
+    try:
+        return float(m.group(1).replace(",", "")), m.group(2)
+    except ValueError:
+        return None, None
+
+
+def _parse_nav_per_share(page_html: str) -> tuple[float | None, str | None]:
+    """Returns (nav_per_share, as_of_date) from the "...net asset value as of [date], is $Y per
+    share..." footnote sentence -- see _parse_total_nav."""
+    m = _NAV_PER_SHARE_RE.search(page_html)
+    if not m:
+        return None, None
+    try:
+        return float(m.group(2).replace(",", "")), m.group(1)
+    except ValueError:
+        return None, None
 
 
 def _parse_as_of_date(page_html: str) -> str | None:
@@ -184,8 +226,14 @@ def _aggregate_by_company(holdings: list[Holding]) -> list[Holding]:
 
 def parse_portfolio(page_html: str) -> RobostrategySnapshot:
     holdings = _aggregate_by_company(_parse_holdings(page_html))
+    total_nav, total_nav_as_of = _parse_total_nav(page_html)
+    nav_per_share, nav_per_share_as_of = _parse_nav_per_share(page_html)
+    nav_as_of_raw = nav_per_share_as_of or total_nav_as_of
+    nav_as_of = re.sub(r"\s+", " ", nav_as_of_raw).strip() if nav_as_of_raw else None
     return RobostrategySnapshot(
         as_of=_parse_as_of_date(page_html),
-        nav_per_share=_parse_nav_per_share(page_html),
+        nav_per_share=nav_per_share,
         holdings=tuple(holdings),
+        total_nav=total_nav,
+        nav_as_of=nav_as_of,
     )

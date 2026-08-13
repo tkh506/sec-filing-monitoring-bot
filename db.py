@@ -93,9 +93,11 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     # ALTER TABLE ... ADD COLUMN doesn't have an IF NOT EXISTS form, and CREATE TABLE IF NOT
-    # EXISTS above is a no-op against an already-initialized users table (this bot is already
-    # running in production with a persistent data/bot.db) -- check first, add if missing.
+    # EXISTS above is a no-op against an already-initialized table (this bot is already running
+    # in production with a persistent data/bot.db) -- check first, add if missing.
     _ensure_column(conn, "users", "robostrategy_enabled", "robostrategy_enabled INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "robostrategy_snapshot", "total_nav", "total_nav REAL")
+    _ensure_column(conn, "robostrategy_snapshot", "nav_as_of", "nav_as_of TEXT")
     conn.commit()
 
 
@@ -298,16 +300,23 @@ def get_robostrategy_snapshot() -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM robostrategy_snapshot WHERE id = 1").fetchone()
 
 
-def save_robostrategy_snapshot(as_of: str | None, nav_per_share: float | None, holdings_json: str) -> None:
+def save_robostrategy_snapshot(
+    as_of: str | None,
+    nav_per_share: float | None,
+    holdings_json: str,
+    total_nav: float | None = None,
+    nav_as_of: str | None = None,
+) -> None:
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO robostrategy_snapshot (id, as_of, nav_per_share, holdings_json, updated_at)
-        VALUES (1, ?, ?, ?, ?)
+        INSERT INTO robostrategy_snapshot (id, as_of, nav_per_share, holdings_json, total_nav, nav_as_of, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET as_of=excluded.as_of, nav_per_share=excluded.nav_per_share,
-            holdings_json=excluded.holdings_json, updated_at=excluded.updated_at
+            holdings_json=excluded.holdings_json, total_nav=excluded.total_nav,
+            nav_as_of=excluded.nav_as_of, updated_at=excluded.updated_at
         """,
-        (as_of, nav_per_share, holdings_json, _now_iso()),
+        (as_of, nav_per_share, holdings_json, total_nav, nav_as_of, _now_iso()),
     )
     conn.commit()
 

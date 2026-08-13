@@ -20,7 +20,9 @@ async def main() -> None:
     page_html = await fetch_portfolio_html(config.get_edgar_user_agent())
     snapshot = parse_portfolio(page_html)
 
-    print(f"As of: {snapshot.as_of}")
+    print(f"As of (holdings table): {snapshot.as_of}")
+    print(f"As of (NAV figures): {snapshot.nav_as_of}")
+    print(f"Total NAV: {snapshot.total_nav}")
     print(f"NAV per share: {snapshot.nav_per_share}")
     print(f"{len(snapshot.holdings)} holdings:")
     total_pct = 0.0

@@ -15,10 +15,21 @@ footnote sentence elsewhere on the page ("...Net Assets Applicable to Common Sha
 `_parse_total_nav`/`_parse_nav_per_share` now extract. Note this prose sentence can carry a more
 recent "as of" date (`RobostrategySnapshot.nav_as_of`) than the holdings table's own `as_of` date
 -- the fund's overall NAV appears to update on a different cadence than the detailed holdings
-breakdown. There's also a large embedded JSON blob further down the page with per-holding dollar
-figures, structured as Framer's internal CMS export (obfuscated field-ID hashes, no stable schema,
-and it appears to mix multiple report years per company) -- deliberately NOT parsed, too fragile
-and ambiguous to trust; per-company Fair Value stays unavailable.
+breakdown.
+
+Per-holding shares/Fair Value: the page has a "Summary"/"Full Detail" toggle, and Full Detail is
+where those figures used to live -- but they're rendered client-side by JavaScript after the page
+loads (confirmed: neither "Fair Value" nor a shares column appears anywhere in the raw HTML this
+client fetches, regardless of which tab is default). A plain HTTP GET structurally cannot see
+them. The only trace of the underlying numbers in the static HTML is a large embedded JSON blob
+meant to hydrate that JS view -- inspected closely and confirmed to be Framer's internal
+serialization format (per-build cryptic hash IDs referencing a shared value pool by index, no
+documented schema), not a stable data source worth building on. Getting Full Detail's real numbers
+would require headless-browser automation (e.g. Playwright: load the page, click the toggle, read
+the rendered DOM) -- evaluated and explicitly declined (2026-07) after discussing the tradeoff
+(new ~300MB browser dependency, meaningfully more RAM/CPU per check, slower checks, its own new
+failure modes) with the user, who preferred staying on the lightweight HTTP-only approach.
+Per-company Fair Value and shares therefore stay unavailable; revisit only if asked again.
 
 Row anchor: each holding's name cell is `data-framer-name="Name / Link"` (companies with their own
 portfolio sub-page, name wrapped in an <a>) or plain `data-framer-name="Name"` (companies without

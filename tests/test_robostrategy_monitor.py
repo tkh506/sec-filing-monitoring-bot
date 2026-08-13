@@ -1,5 +1,5 @@
 from robostrategy_client import Holding, RobostrategySnapshot
-from robostrategy_monitor import diff_snapshots
+from robostrategy_monitor import build_portfolio_summary
 
 
 def _snapshot(
@@ -13,109 +13,152 @@ def _snapshot(
     )
 
 
-def test_no_change_produces_empty_diff():
-    holdings = [Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0)]
-    previous = _snapshot(holdings)
-    current = _snapshot(holdings)
-    assert diff_snapshots(previous, current) == []
+def _holding(name: str, pct_nav: float, business: str = "Some Business") -> Holding:
+    return Holding(name, business, None, pct_nav)
 
 
-def test_added_company():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0)])
+# --- no change at all -------------------------------------------------------
+
+def test_no_change_everywhere_reports_no_change_and_restates_nav():
+    holdings = [_holding("Standard Bots", 35.0)]
+    previous = _snapshot(holdings, nav_per_share=10.51, total_nav=274_578_031)
+    current = _snapshot(holdings, nav_per_share=10.51, total_nav=274_578_031)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.composition_text == "No Change"
+    assert summary.pct_change_text == "No Change"
+    assert summary.nav_text == "No Change. Total NAV: $274,578,031, NAV per share: $10.51"
+    assert summary.has_any_change is False
+
+
+def test_no_change_with_no_nav_data_available():
+    holdings = [_holding("Standard Bots", 35.0)]
+    previous = _snapshot(holdings, nav_per_share=None, total_nav=None)
+    current = _snapshot(holdings, nav_per_share=None, total_nav=None)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.nav_text == "No Change"
+
+
+# --- composition: 1-2 vs >2 --------------------------------------------------
+
+def test_composition_one_added_reports_name_and_pct():
+    previous = _snapshot([_holding("Standard Bots", 35.0)])
+    current = _snapshot([_holding("Standard Bots", 35.0), _holding("New Co", 1.0, "Robotics")])
+    summary = build_portfolio_summary(previous, current)
+    assert summary.composition_text == "➕ Added: New Co (1.0% of NAV)"
+    assert summary.has_any_change is True
+
+
+def test_composition_one_removed_reports_name_and_former_pct():
+    previous = _snapshot([_holding("Standard Bots", 35.0), _holding("Gone Co", 0.5)])
+    current = _snapshot([_holding("Standard Bots", 35.0)])
+    summary = build_portfolio_summary(previous, current)
+    assert summary.composition_text == "➖ Removed: Gone Co (was 0.5% of NAV)"
+
+
+def test_composition_two_added_and_two_removed_lists_all():
+    previous = _snapshot([_holding("A", 1.0), _holding("B", 2.0)])
+    current = _snapshot([_holding("C", 3.0), _holding("D", 4.0)])
+    summary = build_portfolio_summary(previous, current)
+    assert "➕ Added: C (3.0% of NAV); D (4.0% of NAV)" in summary.composition_text
+    assert "➖ Removed: A (was 1.0% of NAV); B (was 2.0% of NAV)" in summary.composition_text
+
+
+def test_composition_more_than_two_added_summarizes_top_two():
+    previous = _snapshot([_holding("Base", 50.0)])
     current = _snapshot(
         [
-            Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0),
-            Holding("New Co", "Robotics Infrastructure", 1_000_000, 1.0),
+            _holding("Base", 50.0),
+            _holding("Small", 1.0),
+            _holding("Big", 10.0),
+            _holding("Medium", 5.0),
         ]
     )
-    lines = diff_snapshots(previous, current)
-    assert len(lines) == 1
-    assert "➕ Added: New Co" in lines[0]
-    assert "$1,000,000" in lines[0]
-    assert "1.0% of NAV" in lines[0]
+    summary = build_portfolio_summary(previous, current)
+    assert summary.composition_text == "➕ 3 companies added, including Big (10.0% of NAV) and Medium (5.0% of NAV)"
 
 
-def test_removed_company():
+def test_composition_more_than_two_removed_summarizes_top_two_by_former_pct():
     previous = _snapshot(
         [
-            Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0),
-            Holding("Gone Co", "Logistics", 500_000, 0.5),
+            _holding("Base", 50.0),
+            _holding("Small", 1.0),
+            _holding("Big", 10.0),
+            _holding("Medium", 5.0),
         ]
     )
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0)])
-    lines = diff_snapshots(previous, current)
-    assert lines == ["➖ Removed: Gone Co"]
-
-
-def test_fair_value_and_pct_change():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", 80_000_000, 32.0)])
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", 90_000_000, 36.0)])
-    lines = diff_snapshots(previous, current)
-    assert len(lines) == 1
-    assert "$80,000,000 → $90,000,000" in lines[0]
-    assert "32.0% → 36.0%" in lines[0]
-
-
-def test_nav_per_share_change():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0)], nav_per_share=10.00)
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971, 35.0)], nav_per_share=10.51)
-    lines = diff_snapshots(previous, current)
-    assert len(lines) == 1
-    assert "$10.00 → $10.51" in lines[0]
-    assert "+5.1%" in lines[0]
-
-
-def test_tiny_float_noise_is_not_reported_as_a_change():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971.0, 35.00)], nav_per_share=10.510)
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", 86_999_971.001, 35.001)], nav_per_share=10.5101)
-    assert diff_snapshots(previous, current) == []
-
-
-def test_total_nav_change():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], total_nav=270_000_000)
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], total_nav=274_578_031)
-    lines = diff_snapshots(previous, current)
-    assert len(lines) == 1
-    assert "Total NAV: $270,000,000 → $274,578,031" in lines[0]
-    assert "+1.7%" in lines[0]
-
-
-def test_no_total_nav_line_when_both_sides_are_none():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)])
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 36.0)])
-    lines = diff_snapshots(previous, current)
-    assert not any("Total NAV" in line for line in lines)
-
-
-# RoboStrategy's page no longer publishes per-holding fair value (2026-07 redesign) -- these cover
-# the resulting fair_value=None reality, which is what the parser actually produces today for
-# every holding. The tests above (with real fair_value numbers) cover the same logic paths in
-# case the site ever brings that figure back -- both must keep working. Total NAV and NAV per
-# share, unlike fair value, ARE still published (moved to a prose footnote) -- see
-# robostrategy_client.py's module docstring.
-
-def test_added_company_without_fair_value_omits_dollar_amount():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], nav_per_share=None)
-    current = _snapshot(
-        [
-            Holding("Standard Bots", "Industrial Automation", None, 35.0),
-            Holding("New Co", "Robotics Infrastructure", None, 1.0),
-        ],
-        nav_per_share=None,
+    current = _snapshot([_holding("Base", 50.0)])
+    summary = build_portfolio_summary(previous, current)
+    assert (
+        summary.composition_text
+        == "➖ 3 companies removed, including Big (was 10.0% of NAV) and Medium (was 5.0% of NAV)"
     )
-    lines = diff_snapshots(previous, current)
-    assert lines == ["➕ Added: New Co (Robotics Infrastructure) — 1.0% of NAV"]
 
 
-def test_pct_change_without_fair_value_shows_only_percentages():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 32.0)], nav_per_share=None)
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 36.0)], nav_per_share=None)
-    lines = diff_snapshots(previous, current)
-    assert lines == ["Standard Bots: 32.0% → 36.0% of NAV"]
+# --- % of NAV changes: 1-2 vs >2 ---------------------------------------------
+
+def test_pct_change_two_companies_lists_both_with_before_after():
+    previous = _snapshot([_holding("A", 30.0), _holding("B", 10.0)])
+    current = _snapshot([_holding("A", 33.0), _holding("B", 8.0)])
+    summary = build_portfolio_summary(previous, current)
+    assert summary.pct_change_text == "A: 30.0% → 33.0%\nB: 10.0% → 8.0%"
 
 
-def test_no_nav_per_share_line_when_both_sides_are_none():
-    previous = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 35.0)], nav_per_share=None)
-    current = _snapshot([Holding("Standard Bots", "Industrial Automation", None, 36.0)], nav_per_share=None)
-    lines = diff_snapshots(previous, current)
-    assert not any("NAV per share" in line for line in lines)
+def test_pct_change_more_than_two_summarizes_top_two_by_absolute_delta():
+    previous = _snapshot(
+        [_holding("A", 30.0), _holding("B", 10.0), _holding("C", 5.0), _holding("D", 2.0)]
+    )
+    current = _snapshot(
+        [_holding("A", 30.5), _holding("B", 4.0), _holding("C", 5.1), _holding("D", 6.0)]
+    )
+    summary = build_portfolio_summary(previous, current)
+    # All 4 moved beyond the epsilon; B moved by 6.0 (largest) and D by 4.0 (second largest) win
+    # the top-2 spots over A (0.5) and C (0.1).
+    assert summary.pct_change_text == "4 companies had % of NAV changes, including B (10.0% → 4.0%) and D (2.0% → 6.0%)"
+
+
+def test_no_pct_change_reports_no_change():
+    holdings = [_holding("A", 30.0)]
+    previous = _snapshot(holdings)
+    current = _snapshot(holdings)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.pct_change_text == "No Change"
+
+
+# --- Total NAV & NAV per share -----------------------------------------------
+
+def test_nav_section_shows_both_figures_when_either_changes():
+    holdings = [_holding("A", 30.0)]
+    previous = _snapshot(holdings, nav_per_share=10.00, total_nav=270_000_000)
+    current = _snapshot(holdings, nav_per_share=10.51, total_nav=274_578_031)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.nav_text == "Total NAV: $270,000,000 → $274,578,031\nNAV per share: $10.00 → $10.51"
+    assert summary.has_any_change is True
+
+
+def test_nav_section_shows_both_figures_when_only_total_nav_changes():
+    holdings = [_holding("A", 30.0)]
+    previous = _snapshot(holdings, nav_per_share=10.00, total_nav=270_000_000)
+    current = _snapshot(holdings, nav_per_share=10.00, total_nav=274_578_031)
+    summary = build_portfolio_summary(previous, current)
+    assert "Total NAV: $270,000,000 → $274,578,031" in summary.nav_text
+    assert "NAV per share: $10.00 → $10.00" in summary.nav_text
+
+
+# --- overall message -----------------------------------------------------
+
+def test_has_any_change_false_when_nothing_moved():
+    holdings = [_holding("A", 30.0)]
+    previous = _snapshot(holdings, nav_per_share=10.0, total_nav=270_000_000)
+    current = _snapshot(holdings, nav_per_share=10.0, total_nav=270_000_000)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.has_any_change is False
+
+
+def test_has_any_change_true_when_only_nav_moved():
+    holdings = [_holding("A", 30.0)]
+    previous = _snapshot(holdings, nav_per_share=10.0, total_nav=270_000_000)
+    current = _snapshot(holdings, nav_per_share=10.51, total_nav=270_000_000)
+    summary = build_portfolio_summary(previous, current)
+    assert summary.composition_text == "No Change"
+    assert summary.pct_change_text == "No Change"
+    assert summary.has_any_change is True

@@ -1,9 +1,13 @@
 """Diffing + the scheduled check cycle for the RoboStrategy portfolio monitor.
 
-All tracked changes (company added/removed, % of NAV change, total NAV change, NAV per share
-change) are deterministic diffs -- no AI involved here by design (see INTRODUCTION.md). The
+The alert is always a three-section factual summary -- Portfolio Composition, % of NAV Changes,
+Total NAV & NAV per Share -- with each section reporting "No Change" explicitly when nothing moved
+in that category, rather than being omitted. This is a deliberate design (agreed with the user):
+when a category has more than 2 changes, the section reports the count and names only the top 2 by
+magnitude, to keep the message readable regardless of how much changed. All of this is deterministic,
+computed from parsed numbers -- no AI involved in deciding what changed (see INTRODUCTION.md). The
 optional "AI Take" button (wired in handlers/callbacks.py) only turns an already-computed factual
-diff into readable prose on tap; it never decides what counts as a change.
+summary into readable prose on tap; it never decides what counts as a change.
 
 `Holding.fair_value` is `float | None` and, in practice, always None: RoboStrategy removed the
 per-holding dollar Fair Value column in a 2026-07 redesign (see robostrategy_client.py's module
@@ -13,6 +17,7 @@ case a future redesign brings it back. `total_nav`/`nav_per_share` are also `flo
 """
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -37,10 +42,21 @@ _PCT_EPSILON = 0.05
 _NAV_EPSILON = 0.001
 _TOTAL_NAV_EPSILON = 0.5
 
+# Above this count in a category, name only the top 2 by magnitude instead of listing everyone.
+_SUMMARIZE_THRESHOLD = 2
+
 _NOTE_TEXT = (
     "(% of NAV is share-of-total — a change in one holding's value shifts every holding's %, "
     "even ones whose own value didn't change.)"
 )
+
+
+@dataclass(frozen=True)
+class PortfolioSummary:
+    composition_text: str
+    pct_change_text: str
+    nav_text: str
+    has_any_change: bool
 
 
 def _now_et_hour() -> int:
@@ -78,6 +94,16 @@ def _save_snapshot(snapshot: RobostrategySnapshot) -> None:
     )
 
 
+def _added_and_removed(
+    previous: RobostrategySnapshot, current: RobostrategySnapshot
+) -> tuple[list[Holding], list[Holding]]:
+    prev_by_name = {h.name: h for h in previous.holdings}
+    curr_by_name = {h.name: h for h in current.holdings}
+    added = [h for name, h in curr_by_name.items() if name not in prev_by_name]
+    removed = [h for name, h in prev_by_name.items() if name not in curr_by_name]
+    return added, removed
+
+
 def _changed_holdings(
     previous: RobostrategySnapshot, current: RobostrategySnapshot
 ) -> list[tuple[str, Holding, Holding]]:
@@ -99,80 +125,111 @@ def _changed_holdings(
     return changed
 
 
-def diff_snapshots(previous: RobostrategySnapshot, current: RobostrategySnapshot) -> list[str]:
-    """Pure function: compares two snapshots, returns factual change-description lines (empty
-    if nothing changed). Every line states a number from the data -- no interpretation."""
-    lines: list[str] = []
+def _format_composition_section(added: list[Holding], removed: list[Holding]) -> str:
+    if not added and not removed:
+        return "No Change"
 
-    prev_names = {h.name for h in previous.holdings}
-    curr_by_name = {h.name: h for h in current.holdings}
-
-    for name, h in curr_by_name.items():
-        if name not in prev_names:
-            if h.fair_value is not None:
-                lines.append(f"➕ Added: {name} ({h.business}) — ${h.fair_value:,.0f} ({h.pct_nav:.1f}% of NAV)")
-            else:
-                lines.append(f"➕ Added: {name} ({h.business}) — {h.pct_nav:.1f}% of NAV")
-
-    curr_names = set(curr_by_name)
-    for name in prev_names - curr_names:
-        lines.append(f"➖ Removed: {name}")
-
-    for name, prev_h, curr_h in _changed_holdings(previous, current):
-        if prev_h.fair_value is not None and curr_h.fair_value is not None:
-            lines.append(
-                f"{name}: ${prev_h.fair_value:,.0f} → ${curr_h.fair_value:,.0f}  "
-                f"({prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV)"
-            )
+    lines = []
+    if added:
+        if len(added) <= _SUMMARIZE_THRESHOLD:
+            names = "; ".join(f"{h.name} ({h.pct_nav:.1f}% of NAV)" for h in added)
+            lines.append(f"➕ Added: {names}")
         else:
-            lines.append(f"{name}: {prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}% of NAV")
+            top = sorted(added, key=lambda h: h.pct_nav, reverse=True)[:2]
+            examples = " and ".join(f"{h.name} ({h.pct_nav:.1f}% of NAV)" for h in top)
+            lines.append(f"➕ {len(added)} companies added, including {examples}")
 
-    if (
+    if removed:
+        if len(removed) <= _SUMMARIZE_THRESHOLD:
+            names = "; ".join(f"{h.name} (was {h.pct_nav:.1f}% of NAV)" for h in removed)
+            lines.append(f"➖ Removed: {names}")
+        else:
+            top = sorted(removed, key=lambda h: h.pct_nav, reverse=True)[:2]
+            examples = " and ".join(f"{h.name} (was {h.pct_nav:.1f}% of NAV)" for h in top)
+            lines.append(f"➖ {len(removed)} companies removed, including {examples}")
+
+    return "\n".join(lines)
+
+
+def _format_pct_change_section(changed: list[tuple[str, Holding, Holding]]) -> str:
+    if not changed:
+        return "No Change"
+
+    if len(changed) <= _SUMMARIZE_THRESHOLD:
+        return "\n".join(
+            f"{name}: {prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}%" for name, prev_h, curr_h in changed
+        )
+
+    top = sorted(changed, key=lambda c: abs(c[2].pct_nav - c[1].pct_nav), reverse=True)[:2]
+    examples = " and ".join(f"{name} ({prev_h.pct_nav:.1f}% → {curr_h.pct_nav:.1f}%)" for name, prev_h, curr_h in top)
+    return f"{len(changed)} companies had % of NAV changes, including {examples}"
+
+
+def _format_nav_section(previous: RobostrategySnapshot, current: RobostrategySnapshot) -> tuple[str, bool]:
+    total_nav_changed = (
         previous.total_nav is not None
         and current.total_nav is not None
         and abs(current.total_nav - previous.total_nav) > _TOTAL_NAV_EPSILON
-    ):
-        pct_change = (
-            (current.total_nav - previous.total_nav) / previous.total_nav * 100 if previous.total_nav else 0.0
-        )
-        sign = "+" if pct_change >= 0 else ""
-        lines.append(
-            f"Total NAV: ${previous.total_nav:,.0f} → ${current.total_nav:,.0f} ({sign}{pct_change:.1f}%)"
-        )
-
-    if (
+    )
+    nav_per_share_changed = (
         previous.nav_per_share is not None
         and current.nav_per_share is not None
         and abs(current.nav_per_share - previous.nav_per_share) > _NAV_EPSILON
-    ):
-        pct_change = (
-            (current.nav_per_share - previous.nav_per_share) / previous.nav_per_share * 100
-            if previous.nav_per_share
-            else 0.0
-        )
-        sign = "+" if pct_change >= 0 else ""
-        lines.append(
-            f"NAV per share: ${previous.nav_per_share:.2f} → ${current.nav_per_share:.2f} "
-            f"({sign}{pct_change:.1f}%)"
-        )
+    )
+    changed = total_nav_changed or nav_per_share_changed
 
-    return lines
+    if changed:
+        # Show both figures for context whenever either one moved, even if only one actually did.
+        lines = []
+        if previous.total_nav is not None and current.total_nav is not None:
+            lines.append(f"Total NAV: ${previous.total_nav:,.0f} → ${current.total_nav:,.0f}")
+        if previous.nav_per_share is not None and current.nav_per_share is not None:
+            lines.append(f"NAV per share: ${previous.nav_per_share:.2f} → ${current.nav_per_share:.2f}")
+        return "\n".join(lines), True
+
+    parts = []
+    if current.total_nav is not None:
+        parts.append(f"Total NAV: ${current.total_nav:,.0f}")
+    if current.nav_per_share is not None:
+        parts.append(f"NAV per share: ${current.nav_per_share:.2f}")
+    restated = ", ".join(parts)
+    return (f"No Change. {restated}" if restated else "No Change"), False
 
 
-def _format_message(current: RobostrategySnapshot, change_lines: list[str], include_note: bool) -> str:
+def build_portfolio_summary(previous: RobostrategySnapshot, current: RobostrategySnapshot) -> PortfolioSummary:
+    """Pure function: builds the three-section factual summary comparing two snapshots."""
+    added, removed = _added_and_removed(previous, current)
+    changed = _changed_holdings(previous, current)
+    composition_text = _format_composition_section(added, removed)
+    pct_change_text = _format_pct_change_section(changed)
+    nav_text, nav_changed = _format_nav_section(previous, current)
+    has_any_change = bool(added or removed or changed or nav_changed)
+    return PortfolioSummary(
+        composition_text=composition_text,
+        pct_change_text=pct_change_text,
+        nav_text=nav_text,
+        has_any_change=has_any_change,
+    )
+
+
+def _format_message(current: RobostrategySnapshot, summary: PortfolioSummary) -> str:
     header = f"📊 <b>RoboStrategy Portfolio Update</b> — as of {current.as_of or 'unknown date'}"
-    body = "\n".join(change_lines)
-    note = f"\n\n{_NOTE_TEXT}" if include_note else ""
+    body = (
+        f"<b>1) Portfolio Composition</b>\n{summary.composition_text}\n\n"
+        f"<b>2) % of NAV Changes</b>\n{summary.pct_change_text}\n\n"
+        f"<b>3) Total NAV &amp; NAV per Share</b>\n{summary.nav_text}"
+    )
+    show_note = summary.composition_text != "No Change" or summary.pct_change_text != "No Change"
+    note = f"\n\n{_NOTE_TEXT}" if show_note else ""
     return f"{header}\n\n{body}{note}\n\n{PORTFOLIO_URL}"
 
 
-def _format_heartbeat(current: RobostrategySnapshot) -> str:
-    parts = [f"✅ No changes to the RoboStrategy portfolio today. {len(current.holdings)} holdings tracked."]
-    if current.nav_per_share is not None:
-        parts.append(f"NAV per share: ${current.nav_per_share:.2f}.")
-    if current.total_nav is not None:
-        parts.append(f"Total NAV: ${current.total_nav:,.0f}.")
-    return " ".join(parts)
+def _build_diff_text(summary: PortfolioSummary) -> str:
+    return (
+        f"Portfolio Composition: {summary.composition_text}\n"
+        f"% of NAV Changes: {summary.pct_change_text}\n"
+        f"Total NAV & NAV per Share: {summary.nav_text}"
+    )
 
 
 async def run_robostrategy_check(bot, user_agent: str) -> None:
@@ -198,26 +255,26 @@ async def run_robostrategy_check(bot, user_agent: str) -> None:
         # with the SEC side's "first-watch never backfills" policy (handlers/actions.py:do_watch).
         _save_snapshot(current)
         if is_midnight_run:
-            heartbeat = _format_heartbeat(current)
+            summary = build_portfolio_summary(current, current)  # trivially all "No Change"
+            message = _format_message(current, summary)
             for user_id in subscribers:
-                await send_with_retry(bot, user_id, heartbeat)
+                await send_with_retry(bot, user_id, message, parse_mode="HTML")
         return
 
-    change_lines = diff_snapshots(previous, current)
+    summary = build_portfolio_summary(previous, current)
 
-    if change_lines:
-        include_note = bool(_changed_holdings(previous, current))
-        message = _format_message(current, change_lines, include_note)
-        diff_text = "\n".join(change_lines)
-        for user_id in subscribers:
-            summary_id = db.insert_robostrategy_pending_ai(diff_text)
-            reply_markup = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🤖 AI Take", callback_data=f"rsai:{summary_id}")]]
-            )
-            await send_with_retry(bot, user_id, message, parse_mode="HTML", reply_markup=reply_markup)
-    elif is_midnight_run:
-        heartbeat = _format_heartbeat(current)
-        for user_id in subscribers:
-            await send_with_retry(bot, user_id, heartbeat)
+    if summary.has_any_change or is_midnight_run:
+        message = _format_message(current, summary)
+        if summary.has_any_change:
+            diff_text = _build_diff_text(summary)
+            for user_id in subscribers:
+                summary_id = db.insert_robostrategy_pending_ai(diff_text)
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🤖 AI Take", callback_data=f"rsai:{summary_id}")]]
+                )
+                await send_with_retry(bot, user_id, message, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            for user_id in subscribers:
+                await send_with_retry(bot, user_id, message, parse_mode="HTML")
 
     _save_snapshot(current)

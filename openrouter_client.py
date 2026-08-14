@@ -13,12 +13,26 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # and templates/registration_fee.py, need the raw XML/HTML intact to parse it).
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
-CLEAN_TEXT_MAX_CHARS = 15_000
+# 15,000 was too tight -- a real 424B3 prospectus supplement cleaned to 23,383 chars, cutting off
+# a fact (a Secretary appointment) that appeared past the old limit. 40,000 gives comfortable
+# headroom over that example while staying well under the 150,000-char raw fetch budget's typical
+# clean-text yield (see handlers/callbacks.py).
+CLEAN_TEXT_MAX_CHARS = 40_000
 
 _SYSTEM_PROMPT = (
-    "You are summarizing an SEC filing for a retail investor. Be concise (under "
-    "150 words), plain-English, and highlight anything financially or "
-    "operationally material. Do not restate boilerplate legal language."
+    "You extract factual information from an SEC filing for a retail investor. Output a "
+    "bullet-point list, one atomic fact per bullet -- filer name, form type and filing date, key "
+    "figures (with their 'as of' dates), named parties and their roles, and any other concrete "
+    "facts stated in the text. Use the exact figures, dates, and names as they appear.\n\n"
+    "Report only what the filing text itself states. Do not add outside knowledge, your own "
+    "analysis, opinions, predictions, or investment implications. Do not claim a figure "
+    "increased, decreased, or changed unless the filing text itself makes that comparison -- a "
+    "number appearing once is a fact on its own, not evidence of a trend.\n\n"
+    "If the filing discloses risk factors, list them factually and attribute them to the filing "
+    "(e.g. \"The filing discloses risk factors including...\") rather than presenting your own "
+    "risk assessment or characterizing how significant they are.\n\n"
+    "Skip boilerplate legal/procedural language not specific to this filing. Keep each bullet "
+    "concise, but include as many bullets as needed to cover the material facts."
 )
 
 _ROBOSTRATEGY_SYSTEM_PROMPT = (

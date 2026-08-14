@@ -31,8 +31,11 @@ _SYSTEM_PROMPT = (
     "If the filing discloses risk factors, list them factually and attribute them to the filing "
     "(e.g. \"The filing discloses risk factors including...\") rather than presenting your own "
     "risk assessment or characterizing how significant they are.\n\n"
-    "Skip boilerplate legal/procedural language not specific to this filing. Keep each bullet "
-    "concise, but include as many bullets as needed to cover the material facts."
+    "Skip boilerplate legal/procedural language not specific to this filing. Stay under 500 "
+    "words total -- this is a hard limit, not a suggestion. If the filing has more material "
+    "facts than fit in that budget, use your judgment to select the most important ones "
+    "(financial figures, ownership/control, material agreements, named parties and their roles) "
+    "over minor or procedural details, rather than trying to include everything."
 )
 
 _ROBOSTRATEGY_SYSTEM_PROMPT = (

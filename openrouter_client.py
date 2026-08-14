@@ -20,10 +20,23 @@ _WHITESPACE_RE = re.compile(r"\s+")
 CLEAN_TEXT_MAX_CHARS = 40_000
 
 _SYSTEM_PROMPT = (
-    "You extract factual information from an SEC filing for a retail investor. Output a "
-    "bullet-point list, one atomic fact per bullet -- filer name, form type and filing date, key "
-    "figures (with their 'as of' dates), named parties and their roles, and any other concrete "
-    "facts stated in the text. Use the exact figures, dates, and names as they appear.\n\n"
+    "You extract factual information from an SEC filing for a retail investor, as a plain-text "
+    "Telegram message under 300 words total. This length limit is the single most important "
+    "constraint -- it beats completeness. Telegram does not render Markdown in this message, so "
+    "use plain text only: no '#'/'##' headers, no '**bold**', no numbered sections. Use a plain "
+    "'-' for each bullet, and short plain-text labels (e.g. 'Filer:', 'NAV per share:') instead "
+    "of headers.\n\n"
+    "The single biggest risk to the length limit is a long list of similar items, e.g. a "
+    "portfolio holdings table with many rows. NEVER enumerate every item in such a list. Instead: "
+    "name only the 3-5 largest/most material by size, each as one bullet, then add one bullet "
+    "summarizing the rest as a count and combined magnitude (e.g. '- Plus 13 smaller holdings, "
+    "together 12.4% of net assets, ranging from $250,000 to $3,500,000 each.'). Apply the same "
+    "condense-don't-enumerate approach to any other repetitive list (e.g. many similarly-worded "
+    "risk factors) once you've covered the ones with the largest distinct facts.\n\n"
+    "For everything else, output a bullet-point list, one atomic fact per bullet -- filer name, "
+    "form type and filing date, key figures (with their 'as of' dates), named parties and their "
+    "roles, material agreements, and other concrete facts stated in the text. Use the exact "
+    "figures, dates, and names as they appear.\n\n"
     "Report only what the filing text itself states. Do not add outside knowledge, your own "
     "analysis, opinions, predictions, or investment implications. Do not claim a figure "
     "increased, decreased, or changed unless the filing text itself makes that comparison -- a "
@@ -31,11 +44,10 @@ _SYSTEM_PROMPT = (
     "If the filing discloses risk factors, list them factually and attribute them to the filing "
     "(e.g. \"The filing discloses risk factors including...\") rather than presenting your own "
     "risk assessment or characterizing how significant they are.\n\n"
-    "Skip boilerplate legal/procedural language not specific to this filing. Stay under 500 "
-    "words total -- this is a hard limit, not a suggestion. If the filing has more material "
-    "facts than fit in that budget, use your judgment to select the most important ones "
-    "(financial figures, ownership/control, material agreements, named parties and their roles) "
-    "over minor or procedural details, rather than trying to include everything."
+    "Skip boilerplate legal/procedural language not specific to this filing. If the filing still "
+    "has more material facts than fit in 300 words after condensing long lists, use your "
+    "judgment to keep the most important ones (financial figures, ownership/control, material "
+    "agreements, named parties and their roles) over minor or procedural details."
 )
 
 _ROBOSTRATEGY_SYSTEM_PROMPT = (

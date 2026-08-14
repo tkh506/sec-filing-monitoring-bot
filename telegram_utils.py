@@ -9,6 +9,36 @@ from telegram.error import Forbidden, RetryAfter, TelegramError
 
 logger = logging.getLogger(__name__)
 
+# Telegram's real cap is 4096 UTF-16 code units per message; stay comfortably under that.
+TELEGRAM_MESSAGE_LIMIT = 4000
+
+
+def split_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Splits text into <=limit-character chunks for Telegram's per-message length cap.
+
+    Prefers breaking on a paragraph or line boundary over a mid-sentence cut; only forces a hard
+    cut at `limit` if no such boundary exists within the current chunk (e.g. one very long
+    unbroken paragraph).
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n\n", 0, limit)
+        if split_at == -1:
+            split_at = remaining.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = remaining.rfind(" ", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
 
 async def send_with_retry(bot, chat_id: int, text: str, **kwargs) -> bool:
     """Best-effort send. Returns True on success, False on any failure.

@@ -8,6 +8,7 @@ import db
 import openrouter_client
 from handlers import actions, menu
 from handlers.commands import AWAITING_TICKER_KEY
+from telegram_utils import split_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,9 @@ async def _handle_robostrategy_ai_take(query, context: ContextTypes.DEFAULT_TYPE
 
     try:
         narration = await openrouter_client.narrate_robostrategy_update(pending["diff_text"])
-        await query.message.reply_text(f"📝 AI Take\n\n{narration}")
+        full_text = f"📝 AI Take\n\n{narration}"
+        for chunk in split_for_telegram(full_text):
+            await query.message.reply_text(chunk)
     except Exception:
         logger.exception("RoboStrategy AI take failed for summary_id=%s", summary_id)
         await query.message.reply_text("Sorry, the AI take failed. Try again later.")
@@ -113,9 +116,9 @@ async def _handle_summarize(query, context: ContextTypes.DEFAULT_TYPE, summary_i
         summary = await openrouter_client.summarize(
             doc_text, form_type=pending["form_type"], ticker=pending["ticker"]
         )
-        await query.message.reply_text(
-            f"📝 AI Summary — {pending['ticker']} {pending['form_type']}\n\n{summary}"
-        )
+        full_text = f"📝 AI Summary — {pending['ticker']} {pending['form_type']}\n\n{summary}"
+        for chunk in split_for_telegram(full_text):
+            await query.message.reply_text(chunk)
     except Exception:
         logger.exception("Summarize failed for summary_id=%s", summary_id)
         await query.message.reply_text("Sorry, summarization failed. Try again later.")
